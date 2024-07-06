@@ -1,0 +1,63 @@
+
+@api_view(("PUT",))
+@parser_classes((MultiPartParser, FormParser))
+def Fin_updateEstimate(request):
+    try:
+        s_id = request.data["Id"]
+        data = Fin_Login_Details.objects.get(id=s_id)
+        if data.User_Type == "Company":
+            com = Fin_Company_Details.objects.get(Login_Id=s_id)
+        else:
+            com = Fin_Staff_Details.objects.get(Login_Id=s_id).company_id
+
+        estimate = Fin_Estimate.objects.get(id=request.data['estimate_id'])
+        # Make a mutable copy of request.data
+
+        mutable_data = deepcopy(request.data)
+        mutable_data["Company"] = com.id
+        mutable_data["LoginDetails"] = com.Login_Id.id
+        mutable_data["exp_date"] = datetime.strptime(request.data['exp_date'], '%Y-%m-%d').date()
+
+        # Parse stock_items from JSON
+        estItems = json.loads(request.data['EstimateItems'])
+        ESNum = request.data['estimate_no']
+        if estimate.estimate_no != ESNum and Fin_Estimate.objects.filter(Company = com, estimate_no__iexact = ESNum).exists():
+            return Response({'status':False, 'message': f"Estimate Number '{ESNum}' already exists, try another!"})
+        else:
+            serializer = FinEstimateSerializer(estimate,data=mutable_data, partial=True)
+            if serializer.is_valid():
+                serializer.save()
+                Fin_Estimate_Items.objects.filter(Estimate=estimate).delete()
+                est = Fin_Estimate.objects.get(id=serializer.data['id'])
+
+                for ele in estItems:
+                    itm = Fin_Items.objects.get(id = int(ele.get('item')))
+                    hsn = ele.get('hsnSac') if itm.item_type == 'Goods' else None
+                    sac = ele.get('hsnSac') if itm.item_type != 'Goods' else None
+                    price =float(ele.get('price')) if ele.get('price') != "" else 0.0
+                    tax = ele.get('taxGst') if com.State == request.data['place_of_supply'] else ele.get('taxIgst')
+                    disc = float(ele.get('discount')) if ele.get('discount') != "" else 0.0
+                    Fin_Estimate_Items.objects.create(Estimate=est, Item = itm, hsn = hsn,sac=sac, quantity = int(ele.get('quantity')), price =price, tax = tax, discount = disc, total = float(ele.get('total')))
+            
+                # Save transaction
+                        
+                Fin_Estimate_History.objects.create(
+                    Company = com,
+                    LoginDetails = data,
+                    Estimate=est,
+                    action = 'Edited'
+                )
+                
+                return Response(
+                    {"status": True, "data": serializer.data}, status=status.HTTP_200_OK
+                )
+            else:
+                return Response(
+                    {"status": False, "data": serializer.errors},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+    except Exception as e:
+        return Response(
+            {"status": False, "message": str(e)},
+            status=status.HTTP_500_INTERNAL_SERVER_ERROR,
+        )
